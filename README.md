@@ -1,36 +1,29 @@
 # ANi Open Adapter Worker
 
-ANi Open Adapter Worker exposes an Animeko-compatible web-selector subscription for files listed by `openani.an-i.workers.dev`.
+ANi Open Adapter Worker is a Cloudflare Worker that exposes an Animeko-compatible web-selector subscription for `openani.an-i.workers.dev`.
 
-The Worker serves search and subject pages from a static index stored in Cloudflare Workers KV. The index builder is intentionally separate from the Worker runtime: build jobs can run on a VPS or CI runner, then publish a new KV manifest after verification.
+The runtime reads a static index from Cloudflare Workers KV and renders three public endpoints:
 
-This repository contains code only. Generated indexes, caches, upload batches, credentials, and media-derived data are not committed.
+```text
+/sub.json                         Animeko media-source subscription
+/search?wd=<keyword>              subject search page
+/subject?season=<s>&titleKey=<k>  episode list page
+```
 
-## What Is Included
+Index generation is separate from the Worker. A scheduled job builds or refreshes the index, verifies it, uploads versioned KV keys, then switches `openani:v1:manifest` after all data keys are present.
+
+This repository contains the Worker runtime and index-maintenance scripts. Generated indexes are private operational data.
+
+## Repository Layout
 
 ```text
 worker.mjs                 Cloudflare Worker runtime
-scripts/build-index.mjs    Build a partial or full index
+scripts/build-index.mjs    Build a full index or a latest-season partial index
 scripts/merge-index.mjs    Merge a partial index into an existing full baseline
-scripts/verify-index.mjs   Validate generated reports and shards
+scripts/verify-index.mjs   Validate reports, season tables, and search shards
 scripts/upload-index.mjs   Upload a verified index to Workers KV
 wrangler.toml.example      Public Wrangler configuration template
 ```
-
-## Data Policy
-
-Do not commit:
-
-- `dist-index/`
-- `cache/`
-- `.wrangler/`
-- `.env`
-- `wrangler.toml`
-- KV upload batches
-- SSH keys or Cloudflare tokens
-- copied media files or site captures
-
-`dist-index/` contains generated subject tables and direct file URLs. Treat it as generated operational data, not source code.
 
 ## Setup
 
@@ -46,9 +39,12 @@ Create a local Wrangler config:
 cp wrangler.toml.example wrangler.toml
 ```
 
-Fill in:
+Fill in the Cloudflare account and KV namespace:
 
 ```toml
+name = "ani-open-adapter"
+main = "worker.mjs"
+compatibility_date = "2026-06-30"
 account_id = "<cloudflare-account-id>"
 
 [[kv_namespaces]]
@@ -56,18 +52,18 @@ binding = "OPENANI_INDEX"
 id = "<workers-kv-namespace-id>"
 ```
 
-For automation, provide a Cloudflare API token through environment variables:
+Automation should use environment variables rather than checked-in files:
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
 export CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
 ```
 
-The token needs Workers KV read/write access for index upload. Worker deployment also requires Workers Scripts permissions.
+For index upload, the token needs Workers KV read/write access. Deploying the Worker also requires Workers Scripts permissions.
 
-## Build A Baseline Index
+## Build The Initial Index
 
-A full baseline index is needed before daily partial updates can be merged.
+The first build creates the private baseline used by later partial updates:
 
 ```bash
 bun run build:index
@@ -75,26 +71,32 @@ bun run verify:index
 bun run upload:index
 ```
 
-The full build writes `dist-index/`. Keep that directory on the build machine, but do not commit it.
+The build writes `dist-index/`. Keep this directory for future update jobs.
 
-## Daily Latest-Season Update
+## Refresh The Latest Seasons
 
-The daily job refreshes the latest two season directories from OpenANI, uses the existing full baseline as global Bangumi matching context, merges the refreshed season tables into a new complete index, verifies it, and uploads it to KV.
+Daily jobs usually do not need to rebuild the full history. The following command refreshes the latest two OpenANI season directories, while using the existing baseline as the global Bangumi matching context:
 
 ```bash
-export PATH="/root/.bun/bin:$PATH"
-
 OPENANI_INDEX_LATEST_COUNT=2 \
 OPENANI_INDEX_INCLUDE_ARCHIVE=0 \
 OPENANI_INDEX_REFRESH=1 \
 OPENANI_INDEX_GLOBAL_BGM_DIR=dist-index \
 OPENANI_INDEX_OUT_DIR=/tmp/openani-index-partial \
 bun run build:index
+```
 
+Merge the partial index into a new complete index:
+
+```bash
 OPENANI_INDEX_PARTIAL_DIR=/tmp/openani-index-partial \
 OPENANI_INDEX_OUT_DIR=/tmp/openani-index-merged \
 bun run merge:index
+```
 
+Verify and upload the merged index:
+
+```bash
 OPENANI_INDEX_DIR=/tmp/openani-index-merged \
 bun run verify:index
 
@@ -102,16 +104,22 @@ OPENANI_INDEX_DIR=/tmp/openani-index-merged \
 bun run upload:index
 ```
 
-After a successful upload, replace the local baseline used by the next job:
+After a successful upload, replace the private baseline used by the next run:
 
 ```bash
 rm -rf dist-index
 cp -a /tmp/openani-index-merged dist-index
 ```
 
-## KV Layout
+On minimal VPS environments, make sure Bun is on `PATH` before running scripts that spawn `bunx`:
 
-The active version is selected by one manifest key:
+```bash
+export PATH="/root/.bun/bin:$PATH"
+```
+
+## KV Model
+
+The Worker reads one active manifest:
 
 ```text
 openani:v1:manifest
@@ -124,9 +132,9 @@ openani:v1:search:<version>:<hashPrefix>
 openani:v1:season:<version>:<season>
 ```
 
-`upload-index.mjs` writes all data keys first, then switches `openani:v1:manifest` last. This keeps runtime reads atomic from the Worker’s point of view.
+`upload-index.mjs` uploads the versioned data keys first and writes `openani:v1:manifest` last. Runtime requests either see the old complete index or the new complete index.
 
-## Deploy Worker
+## Deploy The Worker
 
 Deploy after configuring `wrangler.toml`:
 
@@ -134,14 +142,4 @@ Deploy after configuring `wrangler.toml`:
 bunx wrangler deploy
 ```
 
-The Worker expects the KV binding name to be `OPENANI_INDEX`.
-
-## Runtime Behavior
-
-`/sub.json` returns the Animeko media-source subscription.
-
-`/search?wd=...` normalizes the query and performs an exact lookup in the search shard referenced by the active KV manifest.
-
-`/subject?season=...&titleKey=...` renders episode links from the matching season table.
-
-If KV does not contain a result, the Worker keeps a direct OpenANI fallback for basic availability.
+The KV binding must be named `OPENANI_INDEX`.
