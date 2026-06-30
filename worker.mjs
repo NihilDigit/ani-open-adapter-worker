@@ -20,7 +20,7 @@ export default {
         case "/favicon.ico":
           return favicon();
         case "/sub.json":
-          return json(subscription(url.origin));
+          return json(await subscription(url.origin, env));
         case "/search":
           return cached(request, ctx, () => handleSearch(url, env));
         case "/subject":
@@ -341,7 +341,9 @@ function page(title, body) {
 </html>`;
 }
 
-function subscription(origin) {
+async function subscription(origin, env) {
+  const manifest = await indexManifest(env);
+  const description = subscriptionDescription(manifest);
   return {
     exportedMediaSourceDataList: {
       mediaSources: [
@@ -350,7 +352,7 @@ function subscription(origin) {
           version: 2,
           arguments: {
             name: "ANi Open",
-            description: "收录2019-01之后的新番及部分旧番归档，繁中翻译",
+            description,
             iconUrl: `${origin}/favicon.ico`,
             searchConfig: {
               searchUrl: `${origin}/search?wd={keyword}`,
@@ -395,6 +397,18 @@ function subscription(origin) {
       ],
     },
   };
+}
+
+function subscriptionDescription(manifest) {
+  const parts = ["收录2019-01之后的新番及部分旧番归档，繁中翻译"];
+  if (manifest?.generatedAt) {
+    const updatedAt = formatDateTime(manifest.generatedAt, "Asia/Shanghai");
+    parts.push(`索引更新：${updatedAt}`);
+  }
+  if (manifest?.version) {
+    parts.push(`版本：${manifest.version}`);
+  }
+  return parts.join("；");
 }
 
 async function indexedSearchItems(origin, keyword, env) {
@@ -449,6 +463,20 @@ async function indexJson(env, key) {
   } catch {
     return null;
   }
+}
+
+function formatDateTime(value, timeZone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 async function hashPrefix(value, manifest) {
