@@ -422,7 +422,7 @@ async function subscription(origin, env) {
 function subscriptionDescription(manifest) {
   const base = "收录2019之后的新番";
   if (!manifest?.generatedAt) return base;
-  return `${base}，上次更新:${formatDateHour(manifest.generatedAt, "Asia/Tokyo")}`;
+  return `${base}，上次更新：${formatUpdateTime(manifest.generatedAt, "Asia/Shanghai")}`;
 }
 
 async function indexedSearchItems(origin, keyword, env) {
@@ -479,18 +479,18 @@ async function indexJson(env, key) {
   }
 }
 
-function formatDateHour(value, timeZone) {
+function formatUpdateTime(value, timeZone) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
-    month: "2-digit",
-    day: "2-digit",
+    day: "numeric",
     hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
   }).formatToParts(date);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.month}:${values.day}:${values.hour}`;
+  return `${values.day}日 ${values.hour}:${values.minute}`;
 }
 
 async function hashPrefix(value, manifest) {
