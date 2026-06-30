@@ -1,6 +1,6 @@
 # ANi Open Adapter Worker
 
-ANi Open Adapter Worker is a Cloudflare Worker that exposes an Animeko-compatible web-selector subscription for `openani.an-i.workers.dev`.
+ANi Open Adapter Worker exposes an Animeko-compatible `web-selector` subscription for `openani.an-i.workers.dev`.
 
 The runtime reads a static index from Cloudflare Workers KV and renders three public endpoints:
 
@@ -10,9 +10,9 @@ The runtime reads a static index from Cloudflare Workers KV and renders three pu
 /subject?season=<s>&titleKey=<k>  episode list page
 ```
 
-Index generation is separate from the Worker. A scheduled job builds or refreshes the index, verifies it, uploads versioned KV keys, then switches `openani:v1:manifest` after all data keys are present.
+Index generation is separate from the Worker runtime. A scheduled job builds or refreshes the index, verifies it, uploads versioned KV keys, then switches `openani:v1:manifest` after all data keys are present.
 
-This repository contains the Worker runtime and index-maintenance scripts. Generated indexes are private operational data.
+This repository contains source code and maintenance scripts only. Generated indexes, cache files, direct media URLs, and deployment credentials are private operational data.
 
 ## Repository Layout
 
@@ -25,7 +25,20 @@ scripts/upload-index.mjs   Upload a verified index to Workers KV
 wrangler.toml.example      Public Wrangler configuration template
 ```
 
-## Setup
+## Runtime Model
+
+The Worker serves requests from Cloudflare Workers KV. It does not crawl OpenANI during normal indexed search, except for a small direct fallback path. Upstream fallback requests have a timeout so a slow OpenANI response does not leave Animeko waiting indefinitely.
+
+The update job is separate:
+
+1. Build a full or partial index from OpenANI and Bangumi.
+2. Verify the generated files.
+3. Upload versioned data keys to KV.
+4. Write `openani:v1:manifest` last.
+
+That last step makes index switching atomic from the Worker's point of view: runtime requests either see the previous complete index or the new complete index.
+
+## Local Setup
 
 Install dependencies:
 
@@ -73,9 +86,11 @@ bun run upload:index
 
 The build writes `dist-index/`. Keep this directory for future update jobs.
 
-## Refresh The Latest Seasons
+## Refresh The Latest Seasons On A VPS
 
-Daily jobs usually do not need to rebuild the full history. The following command refreshes the latest two OpenANI season directories, while using the existing baseline as the global Bangumi matching context:
+Daily jobs usually do not need to rebuild the full history. Run the updater on a machine that keeps the private `dist-index/` baseline, such as a VPS.
+
+The following command refreshes the latest two OpenANI season directories while using the existing baseline as the global Bangumi matching context:
 
 ```bash
 OPENANI_INDEX_LATEST_COUNT=2 \
@@ -85,6 +100,8 @@ OPENANI_INDEX_GLOBAL_BGM_DIR=dist-index \
 OPENANI_INDEX_OUT_DIR=/tmp/openani-index-partial \
 bun run build:index
 ```
+
+`build-index.mjs` retries OpenANI and Bangumi requests on `429` and `5xx` responses. It also respects `Retry-After` when the upstream provides one.
 
 Merge the partial index into a new complete index:
 
@@ -117,6 +134,8 @@ On minimal VPS environments, make sure Bun is on `PATH` before running scripts t
 export PATH="/root/.bun/bin:$PATH"
 ```
 
+For a daily job, schedule this around 04:00 UTC+9, after the late-night broadcast window. The job only needs to write KV. It does not need to deploy Worker code.
+
 ## KV Model
 
 The Worker reads one active manifest:
@@ -132,17 +151,15 @@ openani:v1:search:<version>:<hashPrefix>
 openani:v1:season:<version>:<season>
 ```
 
-`upload-index.mjs` uploads the versioned data keys first and writes `openani:v1:manifest` last. Runtime requests either see the old complete index or the new complete index.
-
 ## Deploy The Worker
 
-Deploy after configuring `wrangler.toml`:
+Deploy the Worker from a trusted machine or CI environment after configuring `wrangler.toml`:
 
 ```bash
 bunx wrangler deploy
 ```
 
-The KV binding must be named `OPENANI_INDEX`.
+The KV binding must be named `OPENANI_INDEX`. Worker deployment is independent from the VPS update job; the updater can keep writing KV without redeploying the Worker.
 
 ## License
 
