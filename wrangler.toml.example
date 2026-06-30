@@ -1,0 +1,8 @@
+name = "ani-open-adapter"
+main = "worker.mjs"
+compatibility_date = "2026-06-30"
+account_id = "<cloudflare-account-id>"
+
+[[kv_namespaces]]
+binding = "OPENANI_INDEX"
+id = "<workers-kv-namespace-id>"
