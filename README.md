@@ -143,3 +143,7 @@ bunx wrangler deploy
 ```
 
 The KV binding must be named `OPENANI_INDEX`.
+
+## License
+
+MIT. The license covers this repository's source code and documentation. It does not cover generated indexes, OpenANI or Bangumi data, direct media URLs, or any media content.
