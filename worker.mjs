@@ -4,6 +4,7 @@ const OPENANI_ORIGIN = "https://openani.an-i.workers.dev";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const CACHE_TTL_SECONDS = 30 * 60;
 const CACHE_VERSION = "20260630-legacy-index-exact";
+const OPENANI_TIMEOUT_MS = 8_000;
 const toTraditional = OpenCC.Converter({ from: "cn", to: "tw" });
 const toSimplified = OpenCC.Converter({ from: "tw", to: "cn" });
 
@@ -31,6 +32,7 @@ export default {
           return text("Not found", 404);
       }
     } catch (error) {
+      if (error instanceof UpstreamTimeoutError) return text("Upstream timeout", 504);
       return text(`Adapter error: ${error?.message || error}`, 500);
     }
   },
@@ -208,19 +210,37 @@ function handlePlay(url) {
 
 async function openaniPost(path, body) {
   const target = OPENANI_ORIGIN + encodeOpenPath(path);
-  const response = await fetch(target, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "user-agent": "Animeko-OpenANI-Adapter/1.0",
-    },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(target, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "Animeko-OpenANI-Adapter/1.0",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(OPENANI_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw new UpstreamTimeoutError(`openani timeout for ${path}`);
+    throw error;
+  }
 
   if (!response.ok) {
     throw new Error(`openani ${response.status} for ${path}`);
   }
   return response.json();
+}
+
+class UpstreamTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "UpstreamTimeoutError";
+  }
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError" || error?.name === "TimeoutError";
 }
 
 function toSearchItem(origin, base, file, query) {

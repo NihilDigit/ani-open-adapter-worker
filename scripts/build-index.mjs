@@ -18,6 +18,8 @@ const ARCHIVE_SEASON = "ANi";
 const SEARCH_SHARD_PREFIX_LENGTH = 1;
 const ANI_FOLDER_CONCURRENCY = 6;
 const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_RETRY_COUNT = Number(process.env.OPENANI_INDEX_RETRY_COUNT || 4);
+const REQUEST_RETRY_BASE_MS = Number(process.env.OPENANI_INDEX_RETRY_BASE_MS || 1_000);
 const ANI_FOLDER_MAX_DEPTH = 4;
 const SIMILARITY_EPISODE_STRONG_SCORE = 0.23;
 const SIMILARITY_EPISODE_STRONG_MARGIN = 0.16;
@@ -504,14 +506,11 @@ function matchBgmCandidates(aniTitle, aliasMap, bgmSubjects, globalAliasMap, epi
 }
 
 async function openaniPost(pathname) {
-  const response = await fetch(OPENANI_ORIGIN + encodeOpenPath(pathname), {
+  return fetchJsonWithRetry(`ANi ${pathname}`, OPENANI_ORIGIN + encodeOpenPath(pathname), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ password: null }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`ANi ${response.status} ${pathname}`);
-  return response.json();
 }
 
 async function bgmGetSubjects(year, month, offset) {
@@ -522,17 +521,14 @@ async function bgmGetSubjects(year, month, offset) {
   url.searchParams.set("month", String(month));
   url.searchParams.set("limit", "50");
   url.searchParams.set("offset", String(offset));
-  const response = await fetch(url, {
+  return fetchJsonWithRetry(`Bangumi subjects ${year}-${month} offset ${offset}`, url, {
     headers: { "user-agent": BGM_USER_AGENT },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Bangumi ${response.status} ${url}`);
-  return response.json();
 }
 
 async function bgmSearchSubjects(keyword) {
   const url = new URL("/v0/search/subjects", BGM_API);
-  const response = await fetch(url, {
+  return fetchJsonWithRetry(`Bangumi search ${keyword}`, url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -544,20 +540,62 @@ async function bgmSearchSubjects(keyword) {
       limit: 10,
       offset: 0,
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Bangumi search ${response.status} ${keyword}`);
-  return response.json();
 }
 
 async function bgmGetSubject(id) {
   const url = new URL(`/v0/subjects/${id}`, BGM_API);
-  const response = await fetch(url, {
+  return fetchJsonWithRetry(`Bangumi subject ${id}`, url, {
     headers: { "user-agent": BGM_USER_AGENT },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Bangumi subject ${response.status} ${id}`);
-  return response.json();
+}
+
+async function fetchJsonWithRetry(label, url, init) {
+  let lastError;
+  for (let attempt = 1; attempt <= REQUEST_RETRY_COUNT; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      lastError = error;
+      throw error;
+    }
+
+    if (response.ok) return response.json();
+
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === REQUEST_RETRY_COUNT) {
+      throw new Error(`${label} ${response.status} ${url}`);
+    }
+
+    const delayMs = retryDelayMs(response, attempt);
+    console.error(`[retry] ${label}: ${response.status}; retry ${attempt + 1}/${REQUEST_RETRY_COUNT} in ${delayMs}ms`);
+    await sleep(delayMs);
+  }
+  throw lastError || new Error(`${label} failed`);
+}
+
+function retryDelayMs(response, attempt) {
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterMs = retryAfterDelayMs(retryAfter);
+  if (retryAfterMs !== null) return retryAfterMs;
+  return REQUEST_RETRY_BASE_MS * 2 ** (attempt - 1);
+}
+
+function retryAfterDelayMs(value) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function cachedJson(name, producer) {
